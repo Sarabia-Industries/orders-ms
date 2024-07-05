@@ -6,7 +6,7 @@ CREATE TABLE "OrderItem" (
     "id" TEXT NOT NULL,
     "productId" INTEGER NOT NULL,
     "quantity" INTEGER NOT NULL,
-    "prince" DOUBLE PRECISION NOT NULL,
+    "price" DOUBLE PRECISION NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
     "orderId" TEXT,

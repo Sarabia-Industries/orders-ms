@@ -1,14 +1,26 @@
-import { HttpStatus, Injectable, Logger, OnModuleInit } from '@nestjs/common';
-
+import {
+  HttpStatus,
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
-import { RpcException } from '@nestjs/microservices';
+import { ClientProxy, RpcException } from '@nestjs/microservices';
+import { firstValueFrom } from 'rxjs';
+
 import { OrderPaginationDto } from '../common/dto/order-pagination.dto';
 import { StatusDto } from './dto/status.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { NATS_SERVICE } from '../../config';
 
 @Injectable()
 export class OrdersService extends PrismaClient implements OnModuleInit {
   private readonly logger = new Logger('OrdersService');
+
+  constructor(@Inject(NATS_SERVICE) private readonly client: ClientProxy) {
+    super();
+  }
 
   onModuleInit() {
     this.$connect();
@@ -16,9 +28,71 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
   }
 
   async create(createOrderDto: CreateOrderDto) {
-    return await this.order.create({
-      data: createOrderDto,
-    });
+    try {
+      const productIds = createOrderDto.items.map(
+        (product) => product.productId,
+      );
+
+      const products: any[] = await firstValueFrom(
+        this.client.send({ cmd: 'validate_products' }, productIds),
+      );
+
+      const totalAmount = createOrderDto.items.reduce((acc, orderItem) => {
+        const price = products.find(
+          (product) => product.id === orderItem.productId,
+        ).price;
+
+        return price * orderItem.quantity;
+      }, 0);
+
+      const totalItems = createOrderDto.items.reduce((acc, orderItem) => {
+        return acc + orderItem.quantity;
+      }, 0);
+
+      const order = await this.order.create({
+        data: {
+          totalAmount,
+          totalItems,
+          OrderItem: {
+            createMany: {
+              data: createOrderDto.items.map((item) => {
+                return {
+                  price: products.find(
+                    (product) => product.id === item.productId,
+                  ).price,
+                  productId: item.productId,
+                  quantity: item.quantity,
+                };
+              }),
+            },
+          },
+        },
+        include: {
+          OrderItem: {
+            select: {
+              productId: true,
+              quantity: true,
+              price: true,
+            },
+          },
+        },
+      });
+
+      return {
+        ...order,
+        OrderItem: order.OrderItem.map((product) => {
+          return {
+            ...product,
+            name: products.find((item) => item.id === product.productId).name,
+          };
+        }),
+      };
+    } catch (error) {
+      throw new RpcException({
+        status: HttpStatus.BAD_REQUEST,
+        message: `Check logs`,
+      });
+    }
   }
 
   async findAll(orderPaginationDto: OrderPaginationDto) {
@@ -57,17 +131,41 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
   async findOne(id: string) {
     const order = await this.order.findFirst({
       where: {
-        id,
+        id: id,
+      },
+      include: {
+        OrderItem: {
+          select: {
+            productId: true,
+            quantity: true,
+            price: true,
+          },
+        },
       },
     });
 
-    if (!order)
+    if (!order) {
       throw new RpcException({
         status: HttpStatus.NOT_FOUND,
         message: `Order with id ${id} not found`,
       });
+    }
 
-    return order;
+    const productIds = order.OrderItem.map((item) => item.productId);
+
+    const products: any[] = await firstValueFrom(
+      this.client.send({ cmd: 'validate_products' }, productIds),
+    );
+
+    return {
+      ...order,
+      OrderItem: order.OrderItem.map((product) => {
+        return {
+          ...product,
+          name: products.find((item) => item.id === product.productId).name,
+        };
+      }),
+    };
   }
 
   async changeStatus(statusDto: StatusDto) {
