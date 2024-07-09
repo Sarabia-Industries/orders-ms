@@ -13,6 +13,8 @@ import { OrderPaginationDto } from '../common/dto/order-pagination.dto';
 import { StatusDto } from './dto/status.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { NATS_SERVICE } from '../../config';
+import { OrderWithProducts } from './interfaces/order-with-products.interface';
+import { PaidOrderDto } from './dto/paid-order.dto';
 
 @Injectable()
 export class OrdersService extends PrismaClient implements OnModuleInit {
@@ -178,6 +180,41 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
     return await this.order.update({
       where: { id },
       data: { status },
+    });
+  }
+
+  async createPaymentSession(order: OrderWithProducts) {
+    const paymentSession = await firstValueFrom(
+      this.client.send('create.payment.session', {
+        orderId: order.id,
+        currency: 'usd',
+        items: order.OrderItem.map((item) => ({
+          name: item.name,
+          price: item.price,
+          quantity: item.quantity,
+        })),
+      }),
+    );
+
+    return paymentSession;
+  }
+
+  async paidOrder(paidOrderDto: PaidOrderDto) {
+    const { orderId, receiptUrl, paymentId } = paidOrderDto;
+
+    return await this.order.update({
+      where: { id: orderId },
+      data: {
+        status: 'PAID',
+        paid: true,
+        paidAt: new Date(),
+        paymentChargeId: paymentId,
+        OrderReceipt: {
+          create: {
+            receiptUrl,
+          },
+        },
+      },
     });
   }
 }
